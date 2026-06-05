@@ -1,0 +1,8 @@
+click>=8.1
+torch>=2.0
+gymnasium>=0.29
+numpy>=1.24
+pyyaml>=6.0
+sqlalchemy>=2.0
+psycopg2-binary>=2.9
+pytest>=7.0
