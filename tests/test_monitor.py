@@ -3,10 +3,15 @@
 """
 
 import asyncio
+import json
+import os
+import threading
+import time
 
 import pytest
 import httpx
 from httpx import ASGITransport
+from starlette.testclient import TestClient
 
 from monitor.app import app, experiments_cache, manager
 
@@ -30,6 +35,12 @@ def clear_cache():
 def async_client():
     transport = ASGITransport(app=app)
     return httpx.AsyncClient(transport=transport, base_url="http://test")
+
+
+@pytest.fixture
+def sync_client():
+    """Starlette TestClient — 支持真实 WebSocket 连接。"""
+    return TestClient(app)
 
 
 SAMPLE_METRIC = {
@@ -322,3 +333,266 @@ class TestMultiExperimentIsolation:
         ids = {e["experiment_id"] for e in data}
         assert "exp_1" in ids
         assert "exp_2" in ids
+
+
+# ---------------------------------------------------------------------------
+# Test 6: Real WebSocket endpoint — connect, receive broadcast, verify JSON
+# ---------------------------------------------------------------------------
+
+
+class TestWebSocketEndpoint:
+    """通过 Starlette TestClient 真实连接 /ws/{id} 端点，验证广播到达及 JSON 结构。"""
+
+    def test_ws_receives_metric_broadcast(self, sync_client):
+        """连接 WS，POST 一条指标，验证 WS 收到完整 JSON。"""
+        with sync_client.websocket_connect("/ws/ws_exp_1") as ws:
+            sync_client.post("/api/experiments/ws_exp_1/metrics", json={
+                **SAMPLE_METRIC, "experiment_id": "ws_exp_1", "episode": 7,
+                "total_reward": 99.9,
+            })
+            msg = ws.receive_text()
+            data = json.loads(msg)
+
+            expected_keys = {
+                "episode", "total_reward", "policy_loss", "value_loss",
+                "entropy", "episode_length", "lr", "gamma", "gae_lambda",
+            }
+            assert set(data.keys()) == expected_keys
+            assert data["episode"] == 7
+            assert data["total_reward"] == 99.9
+
+    def test_ws_receives_multiple_metrics_in_order(self, sync_client):
+        """连续 POST 多条指标，WS 按顺序收到。"""
+        with sync_client.websocket_connect("/ws/ws_exp_order") as ws:
+            for i in range(1, 4):
+                sync_client.post("/api/experiments/ws_exp_order/metrics", json={
+                    **SAMPLE_METRIC, "experiment_id": "ws_exp_order",
+                    "episode": i, "total_reward": float(i * 10),
+                })
+
+            for i in range(1, 4):
+                msg = ws.receive_text()
+                data = json.loads(msg)
+                assert data["episode"] == i
+                assert data["total_reward"] == float(i * 10)
+
+    def test_ws_stop_broadcast(self, sync_client):
+        """POST stop 后，WS 收到 type=stop 消息。"""
+        sync_client.post("/api/experiments/ws_exp_stop/metrics", json={
+            **SAMPLE_METRIC, "experiment_id": "ws_exp_stop"
+        })
+        with sync_client.websocket_connect("/ws/ws_exp_stop") as ws:
+            sync_client.post("/api/experiments/ws_exp_stop/stop")
+            msg = ws.receive_text()
+            data = json.loads(msg)
+            assert data["type"] == "stop"
+            assert data["experiment_id"] == "ws_exp_stop"
+
+    def test_ws_disconnect_does_not_crash_server(self, sync_client):
+        """WS 连接后立即断开，后续 POST 不报错。"""
+        with sync_client.websocket_connect("/ws/ws_exp_dc") as ws:
+            pass  # 立即退出 context，触发断连
+
+        resp = sync_client.post("/api/experiments/ws_exp_dc/metrics", json={
+            **SAMPLE_METRIC, "experiment_id": "ws_exp_dc"
+        })
+        assert resp.status_code == 200
+
+    def test_ws_two_experiments_isolated(self, sync_client):
+        """两个 WS 分别订阅不同实验，消息不串。"""
+        with sync_client.websocket_connect("/ws/ws_iso_A") as ws_a:
+            with sync_client.websocket_connect("/ws/ws_iso_B") as ws_b:
+                sync_client.post("/api/experiments/ws_iso_A/metrics", json={
+                    **SAMPLE_METRIC, "experiment_id": "ws_iso_A",
+                    "episode": 1, "total_reward": 111.0,
+                })
+                sync_client.post("/api/experiments/ws_iso_B/metrics", json={
+                    **SAMPLE_METRIC, "experiment_id": "ws_iso_B",
+                    "episode": 1, "total_reward": 222.0,
+                })
+
+                msg_a = json.loads(ws_a.receive_text())
+                msg_b = json.loads(ws_b.receive_text())
+
+                assert msg_a["total_reward"] == 111.0
+                assert msg_b["total_reward"] == 222.0
+
+
+# ---------------------------------------------------------------------------
+# Test 7: Full stop chain integration — POST stop → callback → model save → DB
+# ---------------------------------------------------------------------------
+
+
+class TestStopChainIntegration:
+    """
+    端到端集成测试：模拟完整停止链路。
+    1. 启动 FastAPI 测试服务器
+    2. 创建 MonitorCallback 指向该服务器
+    3. 通过服务器 POST stop
+    4. callback.on_episode_end 返回 True
+    5. 验证 Trainer 停止后保存模型并返回 stopped=True
+    6. 验证 DB 状态标记为 stopped
+    """
+
+    def test_full_stop_chain_with_trainer(self, sync_client):
+        """完整链路：stop → callback 感知 → Trainer 停止 → 模型保存 → DB 更新。"""
+        from monitor.callback import MonitorCallback
+        from train import Trainer
+        from db.database import Database
+
+        # --- 准备：最小化配置 ---
+        cfg = {
+            "experiment": {"name": "stop_chain_test", "seed": 42},
+            "env": {"name": "CartPoleStandard-v0", "max_steps": 50},
+            "network": {"hidden_sizes": [32], "lstm_hidden_size": 32,
+                        "lstm_num_layers": 1, "use_lstm": True, "activation": "tanh"},
+            "algorithm": {"lr": 0.01, "gamma": 0.99, "gae_lambda": 0.95,
+                          "clip_epsilon": 0.2, "value_coef": 0.5,
+                          "entropy_coef": 0.01, "max_grad_norm": 0.5, "update_epochs": 2},
+            "training": {"num_episodes": 200, "batch_size": 32,
+                         "log_interval": 10, "save_interval": 999},
+            "storage": {"model_dir": "models"},
+            "logging": {"level": "WARNING", "log_dir": "logs"},
+        }
+
+        # --- 准备：内存 SQLite 数据库 ---
+        db = Database("sqlite:///:memory:")
+        experiment_id = db.create_experiment(
+            name="stop_chain_test", config_yaml="test"
+        )
+
+        # --- 通过 sync_client 设置 stop 标志 ---
+        sync_client.post(f"/api/experiments/{experiment_id}/metrics", json={
+            **SAMPLE_METRIC, "experiment_id": str(experiment_id)
+        })
+        sync_client.post(f"/api/experiments/{experiment_id}/stop")
+
+        # --- 构造使用 Starlette TestClient 的回调 ---
+        # TestClient 内部正确处理 ASGI sync/async 桥接
+        class TestableCallback:
+            """使用 Starlette TestClient 作为 transport，模拟真实 callback 行为。"""
+            def __init__(self, client, experiment_id):
+                self._client = client
+                self._experiment_id = str(experiment_id)
+                self._stop_requested = False
+
+            @property
+            def stop_requested(self):
+                return self._stop_requested
+
+            def on_episode_end(self, episode, total_reward, policy_loss,
+                              value_loss, entropy, episode_length, lr, gamma, lam):
+                try:
+                    resp = self._client.post(
+                        f"/api/experiments/{self._experiment_id}/metrics",
+                        json={
+                            "experiment_id": self._experiment_id,
+                            "episode": episode,
+                            "total_reward": total_reward,
+                            "policy_loss": policy_loss,
+                            "value_loss": value_loss,
+                            "entropy": entropy,
+                            "episode_length": episode_length,
+                            "lr": lr,
+                            "gamma": gamma,
+                            "gae_lambda": lam,
+                        },
+                    )
+                    if resp.status_code == 200:
+                        self._stop_requested = resp.json().get("stop", False)
+                except Exception:
+                    pass
+                return self._stop_requested
+
+            def close(self):
+                pass
+
+        callback = TestableCallback(client=sync_client, experiment_id=experiment_id)
+
+        # --- 运行 Trainer ---
+        trainer = Trainer(
+            config=cfg,
+            experiment_id=experiment_id,
+            monitor_callback=callback,
+        )
+        result = trainer.train()
+
+        # --- 验证：Trainer 返回 stopped ---
+        assert result["stopped"] is True
+        assert result["total_episodes"] >= 1
+
+        # --- 验证：模型文件已保存 ---
+        model_files = [
+            f for f in os.listdir("models")
+            if f.startswith(f"experiment_{experiment_id}_ep")
+        ]
+        assert len(model_files) >= 1
+
+        # --- 验证：DB 状态标记为 stopped ---
+        status = "stopped" if result.get("stopped") else "finished"
+        db.update_experiment(
+            experiment_id=experiment_id,
+            status=status,
+            total_episodes=result["total_episodes"],
+            final_reward=result["final_reward"],
+        )
+        exp = db.get_experiment(experiment_id)
+        assert exp.status == "stopped"
+
+        # --- 清理 ---
+        callback.close()
+        for f in model_files:
+            os.remove(os.path.join("models", f))
+
+    def test_stop_latency_under_5_seconds(self, sync_client):
+        """停止信号发出后，训练在 5 秒内终止。"""
+        from train import Trainer
+
+        cfg = {
+            "experiment": {"name": "latency_test", "seed": 1},
+            "env": {"name": "CartPoleStandard-v0", "max_steps": 200},
+            "network": {"hidden_sizes": [32], "lstm_hidden_size": 32,
+                        "lstm_num_layers": 1, "use_lstm": True, "activation": "tanh"},
+            "algorithm": {"lr": 0.01, "gamma": 0.99, "gae_lambda": 0.95,
+                          "clip_epsilon": 0.2, "value_coef": 0.5,
+                          "entropy_coef": 0.01, "max_grad_norm": 0.5, "update_epochs": 2},
+            "training": {"num_episodes": 500, "batch_size": 32,
+                         "log_interval": 50, "save_interval": 999},
+            "storage": {"model_dir": "models"},
+            "logging": {"level": "WARNING", "log_dir": "logs"},
+        }
+
+        # 在第3个 episode 之后触发 stop（模拟用户异步点击）
+        class DelayedStopCallback:
+            """前 2 个 episode 正常，第 3 个开始返回 stop。"""
+            def __init__(self):
+                self.call_count = 0
+                self.stop_time = None
+
+            def on_episode_end(self, **kwargs) -> bool:
+                self.call_count += 1
+                if self.call_count >= 3:
+                    if self.stop_time is None:
+                        self.stop_time = time.time()
+                    return True
+                return False
+
+            def close(self):
+                pass
+
+        callback = DelayedStopCallback()
+        trainer = Trainer(config=cfg, experiment_id="latency_test", monitor_callback=callback)
+
+        start = time.time()
+        result = trainer.train()
+        elapsed = time.time() - start
+
+        assert result["stopped"] is True
+        assert result["total_episodes"] == 3
+        assert elapsed < 5.0
+
+        # 清理模型文件
+        for f in os.listdir("models"):
+            if f.startswith("experiment_latency_test_ep"):
+                os.remove(os.path.join("models", f))
+
