@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.idea/
+*.db
+logs/
+models/
+uploads/
+processed/

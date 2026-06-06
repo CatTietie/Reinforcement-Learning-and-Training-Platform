@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RL Training Monitor</title>
+    <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #1a1a2e; color: #e0e0e0; min-height: 100vh; }
+        .header { background: #16213e; padding: 16px 24px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid #0f3460; }
+        .header h1 { font-size: 20px; color: #4fc3f7; }
+        .controls { display: flex; align-items: center; gap: 16px; }
+        .controls select { padding: 8px 12px; border-radius: 6px; border: 1px solid #0f3460; background: #1a1a2e; color: #e0e0e0; font-size: 14px; min-width: 200px; }
+        .status-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+        .status-dot.connected { background: #4caf50; box-shadow: 0 0 6px #4caf50; }
+        .status-dot.disconnected { background: #f44336; box-shadow: 0 0 6px #f44336; }
+        .stop-btn { padding: 8px 20px; background: #d32f2f; color: white; border: none; border-radius: 6px; font-size: 14px; font-weight: 600; cursor: pointer; transition: background 0.2s; }
+        .stop-btn:hover { background: #b71c1c; }
+        .stop-btn:disabled { background: #555; cursor: not-allowed; }
+        .main { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; padding: 16px; }
+        .card { background: #16213e; border-radius: 10px; padding: 16px; border: 1px solid #0f3460; }
+        .card h3 { font-size: 14px; color: #4fc3f7; margin-bottom: 12px; text-transform: uppercase; letter-spacing: 0.5px; }
+        .chart-container { position: relative; height: 260px; }
+        .params-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+        .param-item { display: flex; justify-content: space-between; padding: 6px 10px; background: #1a1a2e; border-radius: 4px; font-size: 13px; }
+        .param-item .label { color: #90a4ae; }
+        .param-item .value { color: #4fc3f7; font-weight: 500; }
+        .latest-metrics { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+        .metric-card { text-align: center; padding: 12px; background: #1a1a2e; border-radius: 6px; }
+        .metric-card .val { font-size: 22px; font-weight: 700; color: #4fc3f7; }
+        .metric-card .lbl { font-size: 11px; color: #90a4ae; margin-top: 4px; }
+        .no-data { text-align: center; color: #555; padding: 40px; font-size: 14px; }
+        .status-bar { font-size: 12px; color: #90a4ae; display: flex; align-items: center; gap: 6px; }
+    </style>
+</head>
+<body>
+<div id="app">
+    <div class="header">
+        <h1>RL Training Monitor</h1>
+        <div class="controls">
+            <div class="status-bar">
+                <span class="status-dot" :class="connected ? 'connected' : 'disconnected'"></span>
+                <span>{{ connected ? 'Connected' : 'Disconnected' }}</span>
+            </div>
+            <select v-model="selectedExperiment" @change="onExperimentChange">
+                <option value="">-- Select Experiment --</option>
+                <option v-for="exp in experiments" :key="exp.experiment_id" :value="exp.experiment_id">
+                    {{ exp.experiment_id }} ({{ exp.status }}, ep: {{ exp.episodes }})
+                </option>
+            </select>
+            <button class="stop-btn" @click="stopExperiment" :disabled="!selectedExperiment || stopSent">
+                {{ stopSent ? 'Stop Sent' : 'Emergency Stop' }}
+            </button>
+        </div>
+    </div>
+
+    <div class="main">
+        <div class="card">
+            <h3>Reward Curve</h3>
+            <div class="chart-container">
+                <canvas id="rewardChart"></canvas>
+            </div>
+        </div>
+        <div class="card">
+            <h3>Loss Curves</h3>
+            <div class="chart-container">
+                <canvas id="lossChart"></canvas>
+            </div>
+        </div>
+        <div class="card">
+            <h3>Hyperparameters</h3>
+            <div v-if="Object.keys(hyperparams).length" class="params-grid">
+                <div class="param-item" v-for="(val, key) in hyperparams" :key="key">
+                    <span class="label">{{ key }}</span>
+                    <span class="value">{{ formatParam(val) }}</span>
+                </div>
+            </div>
+            <div v-else class="no-data">No hyperparameters available</div>
+        </div>
+        <div class="card">
+            <h3>Latest Metrics</h3>
+            <div v-if="latestMetric" class="latest-metrics">
+                <div class="metric-card">
+                    <div class="val">{{ latestMetric.episode }}</div>
+                    <div class="lbl">Episode</div>
+                </div>
+                <div class="metric-card">
+                    <div class="val">{{ latestMetric.total_reward.toFixed(1) }}</div>
+                    <div class="lbl">Reward</div>
+                </div>
+                <div class="metric-card">
+                    <div class="val">{{ latestMetric.policy_loss.toFixed(4) }}</div>
+                    <div class="lbl">Policy Loss</div>
+                </div>
+                <div class="metric-card">
+                    <div class="val">{{ latestMetric.value_loss.toFixed(4) }}</div>
+                    <div class="lbl">Value Loss</div>
+                </div>
+                <div class="metric-card">
+                    <div class="val">{{ latestMetric.entropy.toFixed(4) }}</div>
+                    <div class="lbl">Entropy</div>
+                </div>
+                <div class="metric-card">
+                    <div class="val">{{ latestMetric.episode_length }}</div>
+                    <div class="lbl">Ep Length</div>
+                </div>
+            </div>
+            <div v-else class="no-data">Waiting for data...</div>
+        </div>
+    </div>
+</div>
+
+<script>
+const { createApp, ref, computed, onMounted, onUnmounted, watch, nextTick } = Vue;
+
+createApp({
+    setup() {
+        const experiments = ref([]);
+        const selectedExperiment = ref('');
+        const metrics = ref([]);
+        const hyperparams = ref({});
+        const connected = ref(false);
+        const stopSent = ref(false);
+        let ws = null;
+        let rewardChart = null;
+        let lossChart = null;
+        let pollTimer = null;
+        let reconnectTimer = null;
+
+        const latestMetric = computed(() => {
+            if (metrics.value.length === 0) return null;
+            return metrics.value[metrics.value.length - 1];
+        });
+
+        function formatParam(val) {
+            if (typeof val === 'number') {
+                return val < 0.01 ? val.toExponential(2) : val.toString();
+            }
+            if (Array.isArray(val)) return JSON.stringify(val);
+            return String(val);
+        }
+
+        function initCharts() {
+            const rewardCtx = document.getElementById('rewardChart').getContext('2d');
+            rewardChart = new Chart(rewardCtx, {
+                type: 'line',
+                data: { labels: [], datasets: [{ label: 'Total Reward', data: [], borderColor: '#4fc3f7', backgroundColor: 'rgba(79,195,247,0.1)', fill: true, tension: 0.3, pointRadius: 0 }] },
+                options: { responsive: true, maintainAspectRatio: false, animation: { duration: 0 }, scales: { x: { ticks: { color: '#90a4ae' }, grid: { color: '#0f3460' } }, y: { ticks: { color: '#90a4ae' }, grid: { color: '#0f3460' } } }, plugins: { legend: { labels: { color: '#e0e0e0' } } } }
+            });
+
+            const lossCtx = document.getElementById('lossChart').getContext('2d');
+            lossChart = new Chart(lossCtx, {
+                type: 'line',
+                data: { labels: [], datasets: [
+                    { label: 'Policy Loss', data: [], borderColor: '#ff7043', tension: 0.3, pointRadius: 0 },
+                    { label: 'Value Loss', data: [], borderColor: '#ab47bc', tension: 0.3, pointRadius: 0 }
+                ] },
+                options: { responsive: true, maintainAspectRatio: false, animation: { duration: 0 }, scales: { x: { ticks: { color: '#90a4ae' }, grid: { color: '#0f3460' } }, y: { ticks: { color: '#90a4ae' }, grid: { color: '#0f3460' } } }, plugins: { legend: { labels: { color: '#e0e0e0' } } } }
+            });
+        }
+
+        function updateCharts() {
+            if (!rewardChart || !lossChart) return;
+            const labels = metrics.value.map(m => m.episode);
+            rewardChart.data.labels = labels;
+            rewardChart.data.datasets[0].data = metrics.value.map(m => m.total_reward);
+            rewardChart.update();
+
+            lossChart.data.labels = labels;
+            lossChart.data.datasets[0].data = metrics.value.map(m => m.policy_loss);
+            lossChart.data.datasets[1].data = metrics.value.map(m => m.value_loss);
+            lossChart.update();
+        }
+
+        function connectWebSocket(experimentId) {
+            if (ws) { ws.close(); ws = null; }
+            if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+
+            const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const url = `${proto}//${location.host}/ws/${experimentId}`;
+            ws = new WebSocket(url);
+
+            ws.onopen = () => { connected.value = true; };
+            ws.onclose = () => {
+                connected.value = false;
+                if (selectedExperiment.value === experimentId) {
+                    reconnectTimer = setTimeout(() => connectWebSocket(experimentId), 3000);
+                }
+            };
+            ws.onerror = () => { connected.value = false; };
+            ws.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                if (data.type === 'stop') {
+                    stopSent.value = true;
+                    return;
+                }
+                metrics.value.push(data);
+                updateCharts();
+            };
+        }
+
+        async function fetchExperiments() {
+            try {
+                const resp = await fetch('/api/experiments');
+                experiments.value = await resp.json();
+            } catch (e) {}
+        }
+
+        async function fetchHistory(experimentId) {
+            try {
+                const [metricsResp, paramsResp] = await Promise.all([
+                    fetch(`/api/experiments/${experimentId}/metrics`),
+                    fetch(`/api/experiments/${experimentId}/hyperparams`)
+                ]);
+                const metricsData = await metricsResp.json();
+                const paramsData = await paramsResp.json();
+                metrics.value = metricsData.metrics || [];
+                hyperparams.value = paramsData.hyperparams || {};
+                updateCharts();
+            } catch (e) {}
+        }
+
+        async function onExperimentChange() {
+            stopSent.value = false;
+            if (!selectedExperiment.value) {
+                metrics.value = [];
+                hyperparams.value = {};
+                if (ws) { ws.close(); ws = null; }
+                updateCharts();
+                return;
+            }
+            await fetchHistory(selectedExperiment.value);
+            connectWebSocket(selectedExperiment.value);
+        }
+
+        async function stopExperiment() {
+            if (!selectedExperiment.value) return;
+            try {
+                await fetch(`/api/experiments/${selectedExperiment.value}/stop`, { method: 'POST' });
+                stopSent.value = true;
+            } catch (e) {}
+        }
+
+        onMounted(() => {
+            initCharts();
+            fetchExperiments();
+            pollTimer = setInterval(fetchExperiments, 5000);
+        });
+
+        onUnmounted(() => {
+            if (pollTimer) clearInterval(pollTimer);
+            if (reconnectTimer) clearTimeout(reconnectTimer);
+            if (ws) ws.close();
+        });
+
+        return {
+            experiments, selectedExperiment, metrics, hyperparams,
+            connected, stopSent, latestMetric,
+            onExperimentChange, stopExperiment, formatParam
+        };
+    }
+}).mount('#app');
+</script>
+</body>
+</html>

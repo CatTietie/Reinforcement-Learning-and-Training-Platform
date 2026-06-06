@@ -147,9 +147,10 @@ class Trainer:
     所有状态封装在实例内部，不引入额外全局状态。
     """
 
-    def __init__(self, config, experiment_id=None):
+    def __init__(self, config, experiment_id=None, monitor_callback=None):
         self.config = config
         self.experiment_id = experiment_id or "local"
+        self.monitor_callback = monitor_callback
 
         # 随机种子
         seed = config.get("experiment", {}).get("seed", 42)
@@ -473,6 +474,36 @@ class Trainer:
                 lam=self.lam,
             )
 
+            if self.monitor_callback:
+                should_stop = self.monitor_callback.on_episode_end(
+                    episode=episode,
+                    total_reward=total_reward,
+                    policy_loss=policy_loss,
+                    value_loss=value_loss,
+                    entropy=entropy,
+                    episode_length=ep_length,
+                    lr=self.lr,
+                    gamma=self.gamma,
+                    lam=self.lam,
+                )
+                if should_stop:
+                    self.console_logger.info(
+                        "Stop requested via monitor. Saving model and exiting."
+                    )
+                    self._save_model(episode)
+                    self.structured_logger.close()
+                    self.monitor_callback.close()
+                    return {
+                        "final_reward": total_reward,
+                        "avg_final_10": (
+                            np.mean(episode_rewards[-10:])
+                            if len(episode_rewards) >= 10
+                            else np.mean(episode_rewards)
+                        ),
+                        "total_episodes": len(episode_rewards),
+                        "stopped": True,
+                    }
+
             if episode % self.log_interval == 0:
                 avg_reward = np.mean(episode_rewards[-self.log_interval:])
                 self.console_logger.info(
@@ -500,6 +531,8 @@ class Trainer:
             f"Avg last 10: {avg_final:.2f}"
         )
         self.structured_logger.close()
+        if self.monitor_callback:
+            self.monitor_callback.close()
 
         return {
             "final_reward": final_reward,

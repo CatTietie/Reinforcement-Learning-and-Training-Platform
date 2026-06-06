@@ -31,7 +31,13 @@ def cli():
     default=False,
     help="跳过数据库集成（本地测试模式）",
 )
-def train(config, no_db):
+@click.option(
+    "--monitor-url",
+    "-m",
+    default=None,
+    help="监控服务器URL (如 http://localhost:8000)",
+)
+def train(config, no_db, monitor_url):
     """启动训练：解析配置、写入数据库、执行训练循环。"""
     with open(config, "r", encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
@@ -74,17 +80,43 @@ def train(config, no_db):
         experiment_id = "local"
 
     try:
-        trainer = Trainer(config=cfg, experiment_id=experiment_id)
+        monitor_callback = None
+        if monitor_url:
+            from monitor.callback import MonitorCallback
+
+            algo = cfg.get("algorithm", {})
+            net = cfg.get("network", cfg.get("policy", {}))
+            hyperparams = {
+                "lr": algo.get("lr"),
+                "gamma": algo.get("gamma"),
+                "gae_lambda": algo.get("gae_lambda"),
+                "clip_epsilon": algo.get("clip_epsilon"),
+                "value_coef": algo.get("value_coef"),
+                "entropy_coef": algo.get("entropy_coef"),
+                "hidden_sizes": net.get("hidden_sizes"),
+                "lstm_hidden_size": net.get("lstm_hidden_size"),
+                "use_lstm": net.get("use_lstm"),
+            }
+            monitor_callback = MonitorCallback(
+                monitor_url=monitor_url,
+                experiment_id=str(experiment_id),
+                hyperparams=hyperparams,
+            )
+
+        trainer = Trainer(
+            config=cfg, experiment_id=experiment_id, monitor_callback=monitor_callback
+        )
         result = trainer.train()
 
+        status = "stopped" if result.get("stopped") else "finished"
         if db and experiment_id != "local":
             db.update_experiment(
                 experiment_id=experiment_id,
-                status="finished",
+                status=status,
                 total_episodes=result["total_episodes"],
                 final_reward=result["final_reward"],
             )
-            click.echo(f"Experiment {experiment_id} marked as finished in DB.")
+            click.echo(f"Experiment {experiment_id} marked as {status} in DB.")
 
         click.echo(
             f"Training complete. Final reward: {result['final_reward']:.2f}, "
@@ -317,6 +349,19 @@ def info(db_connection):
             )
     except Exception as e:
         click.echo(f"Failed to connect to database: {e}", err=True)
+
+
+@cli.command()
+@click.option("--host", default="0.0.0.0", help="监控服务器监听地址")
+@click.option("--port", default=8000, type=int, help="监控服务器端口")
+def monitor(host, port):
+    """启动实时监控仪表板服务器。"""
+    import uvicorn
+
+    from monitor.app import app as monitor_app
+
+    click.echo(f"Starting monitor dashboard at http://{host}:{port}")
+    uvicorn.run(monitor_app, host=host, port=port)
 
 
 if __name__ == "__main__":
