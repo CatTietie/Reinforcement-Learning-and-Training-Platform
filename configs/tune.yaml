@@ -1,0 +1,60 @@
+experiment:
+  name: "cartpole_ppo_tune"
+  seed: 42
+
+env:
+  name: "CartPoleSilentDisturbance-v0"
+  max_steps: 500
+  disturbance_prob: 0.1
+
+network:
+  hidden_sizes: [64, 64]
+  activation: "tanh"
+  lstm_hidden_size: 128
+  lstm_num_layers: 1
+  use_lstm: true
+
+algorithm:
+  type: "ppo"
+  lr: 3.0e-4
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_epsilon: 0.2
+  value_coef: 0.5
+  entropy_coef: 0.01
+  update_epochs: 4
+  max_grad_norm: 0.5
+
+training:
+  num_episodes: 200
+  batch_size: 64
+  log_interval: 10
+  save_interval: 100
+
+tuning:
+  n_trials: 20
+  episodes_per_trial: 200
+  eval_last_n: 20
+  search_space:
+    lr:
+      type: "float"
+      low: 5.0e-4
+      high: 5.0e-3
+      log: true
+    clip_epsilon:
+      type: "float"
+      low: 0.1
+      high: 0.3
+      log: false
+    lstm_hidden_size:
+      type: "categorical"
+      choices: [64, 128, 256]
+  final_training_episodes: 500
+
+storage:
+  model_dir: "models"
+  db_connection: "postgresql://postgres:postgres@localhost:5432/rl_experiments"
+
+logging:
+  level: "INFO"
+  log_dir: "logs"

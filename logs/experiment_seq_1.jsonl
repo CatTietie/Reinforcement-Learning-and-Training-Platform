@@ -1,0 +1,5 @@
+{"type": "metadata", "timestamp": "2026-06-05T15:22:21.697005+00:00", "experiment_id": "seq_1", "hyperparams": {"lr": 0.0003, "gamma": 0.99, "gae_lambda": 0.95, "clip_epsilon": 0.2, "mode": "distributed"}}
+{"type": "episode", "timestamp": "2026-06-05T15:22:36.249298+00:00", "episode": 1, "episode_length": 0, "total_reward": 64.0, "policy_loss": 0.023823096106449764, "value_loss": 153.09724553426108, "entropy": 0.6924966077009836}
+{"type": "episode", "timestamp": "2026-06-05T15:22:36.249812+00:00", "episode": 2, "episode_length": 0, "total_reward": 10.0, "policy_loss": 0.023823096106449764, "value_loss": 153.09724553426108, "entropy": 0.6924966077009836}
+{"type": "episode", "timestamp": "2026-06-05T15:22:36.750645+00:00", "episode": 3, "episode_length": 0, "total_reward": 55.0, "policy_loss": -0.02940963286285599, "value_loss": 136.22219721476236, "entropy": 0.692619522412618}
+{"type": "episode", "timestamp": "2026-06-05T15:22:36.750967+00:00", "episode": 4, "episode_length": 0, "total_reward": 13.0, "policy_loss": -0.02940963286285599, "value_loss": 136.22219721476236, "entropy": 0.692619522412618}

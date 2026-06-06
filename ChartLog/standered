@@ -1,0 +1,5 @@
+验收目标
+- 使用 4 个 worker 训练 CartPole 环境，在总交互步数相同的情况下，分布式训练的 wall-clock 时间至少比单机缩短 40%。
+- 运行 python cli.py tune --config configs/example.yaml --n-trials 10，数据库中出现 10 条 trial 记录，每个 trial 包含不同的超参数组合和最终奖励。
+- 调优完成后，自动选出最佳超参数组合，并使用该组合进行一次完整训练，最终奖励需优于默认配置的基准值（提升 > 10%）。
+- 所有新增功能需通过对应的单元测试（如分布式协调逻辑的 mock 测试、调优 scheduler 的集成测试）。

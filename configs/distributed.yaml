@@ -1,0 +1,46 @@
+experiment:
+  name: "cartpole_distributed_ppo"
+  seed: 42
+
+env:
+  name: "CartPoleSilentDisturbance-v0"
+  max_steps: 500
+  disturbance_prob: 0.1
+
+network:
+  hidden_sizes: [64, 64]
+  activation: "tanh"
+  lstm_hidden_size: 128
+  lstm_num_layers: 1
+  use_lstm: true
+
+algorithm:
+  type: "ppo"
+  lr: 3.0e-4
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_epsilon: 0.2
+  value_coef: 0.5
+  entropy_coef: 0.01
+  update_epochs: 4
+  max_grad_norm: 0.5
+
+training:
+  num_episodes: 400
+  batch_size: 64
+  log_interval: 10
+  save_interval: 100
+
+distributed:
+  num_workers: 4
+  batch_before_update: 4
+  weight_sync_interval: 1
+  queue_maxsize: 32
+
+storage:
+  model_dir: "models"
+  db_connection: "postgresql://postgres:postgres@localhost:5432/rl_experiments"
+
+logging:
+  level: "INFO"
+  log_dir: "logs"
