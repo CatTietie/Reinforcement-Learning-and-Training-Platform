@@ -1,0 +1,82 @@
+name: Benchmark CI
+
+on:
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: rl_experiments
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run unit tests
+        run: pytest tests/test_benchmark.py -v --tb=short
+
+      - name: Run benchmark suite
+        run: python cli.py benchmark --suite benchmarks/cartpole_suite.yaml
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/rl_experiments
+
+      - name: Upload benchmark report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-report
+          path: reports/
+
+      - name: Post report as PR comment
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const reportPath = 'reports/benchmark_report.md';
+            if (fs.existsSync(reportPath)) {
+              const report = fs.readFileSync(reportPath, 'utf8');
+              const maxLen = 60000;
+              const body = report.length > maxLen
+                ? report.substring(0, maxLen) + '\n\n...(truncated)'
+                : report;
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: `## Benchmark Results\n\n${body}`
+              });
+            }
+
+      - name: Fail if regression detected
+        run: |
+          if grep -q "REGRESSION DETECTED" reports/benchmark_report.md; then
+            echo "::error::Benchmark regression detected!"
+            exit 1
+          fi

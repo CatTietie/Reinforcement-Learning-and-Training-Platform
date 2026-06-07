@@ -364,5 +364,85 @@ def monitor(host, port):
     uvicorn.run(monitor_app, host=host, port=port)
 
 
+@cli.command()
+@click.option(
+    "--suite",
+    "-s",
+    required=True,
+    type=click.Path(exists=True),
+    help="基准测试套件 YAML 文件路径",
+)
+@click.option(
+    "--verbose",
+    "-v",
+    is_flag=True,
+    default=False,
+    help="显示详细训练日志",
+)
+@click.option(
+    "--db",
+    default=None,
+    help="数据库连接串，提供时将持久化 BenchmarkRun 记录并在报告中追加历史趋势",
+)
+def benchmark(suite, verbose, db):
+    """运行基准测试套件：依次执行各配置并生成回归检测报告。"""
+    from benchmark import BenchmarkRunner, BenchmarkReporter, load_suite
+
+    click.echo(f"Loading benchmark suite: {suite}")
+    suite_obj = load_suite(suite)
+    click.echo(f"Suite: {suite_obj.name} ({len(suite_obj.benchmarks)} benchmarks)\n")
+
+    runner = BenchmarkRunner(suite=suite_obj, verbose=verbose)
+    results = runner.run_all()
+
+    overall = "PASS" if all(r.effective_pass for r in results) else "REGRESSION DETECTED"
+    passed = sum(1 for r in results if r.effective_pass)
+    failed = len(results) - passed
+
+    db_instance = None
+    if db:
+        try:
+            db_instance = Database(db)
+            result_records = [
+                {
+                    "benchmark_name": r.name,
+                    "baseline_reward": r.baseline_reward,
+                    "actual_reward": r.actual_reward,
+                    "ratio": r.ratio,
+                    "threshold_ratio": r.threshold_ratio,
+                    "passed": r.passed,
+                }
+                for r in results
+            ]
+            run_id = db_instance.create_benchmark_run(
+                suite_name=suite_obj.name,
+                overall_status=overall,
+                passed_count=passed,
+                failed_count=failed,
+                result_records=result_records,
+            )
+            click.echo(f"BenchmarkRun saved to DB with ID: {run_id}")
+        except Exception as e:
+            click.echo(f"Warning: DB write failed ({e}). Continuing without persistence.", err=True)
+            db_instance = None
+
+    reporter = BenchmarkReporter(
+        results=results,
+        suite_name=suite_obj.name,
+        report_dir=suite_obj.settings.report_dir,
+        db=db_instance,
+    )
+    report_path = reporter.generate()
+
+    click.echo(f"\n{'='*60}")
+    click.echo(f"BENCHMARK COMPLETE: {passed} passed, {failed} failed")
+    click.echo(f"Overall: {overall}")
+    click.echo(f"Report: {report_path}")
+    click.echo(f"{'='*60}")
+
+    if overall != "PASS":
+        sys.exit(1)
+
+
 if __name__ == "__main__":
     cli()

@@ -1,0 +1,39 @@
+experiment:
+  name: "benchmark_cartpole_disturbance"
+  seed: 42
+
+env:
+  name: "CartPoleSilentDisturbance-v0"
+  max_steps: 500
+  disturbance_prob: 0.05
+
+network:
+  hidden_sizes: [64, 64]
+  activation: "tanh"
+  lstm_hidden_size: 64
+  lstm_num_layers: 1
+  use_lstm: false
+
+algorithm:
+  type: "ppo"
+  lr: 1.0e-3
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_epsilon: 0.2
+  value_coef: 0.5
+  entropy_coef: 0.01
+  update_epochs: 4
+  max_grad_norm: 0.5
+
+training:
+  num_episodes: 300
+  batch_size: 64
+  log_interval: 100
+  save_interval: 1000
+
+storage:
+  model_dir: "models/benchmark"
+
+logging:
+  level: "CRITICAL"
+  log_dir: "logs/benchmark"

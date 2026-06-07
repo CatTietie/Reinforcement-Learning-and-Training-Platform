@@ -1,0 +1,44 @@
+suite:
+  name: "CartPole Benchmark Suite"
+  description: "Validates PPO training across standard and disturbance CartPole environments"
+  version: "1.0"
+
+defaults:
+  training:
+    log_interval: 50
+  logging:
+    level: "CRITICAL"
+  storage:
+    db_connection: null
+
+benchmarks:
+  - name: "cartpole_standard_baseline"
+    description: "Standard CartPole with well-tuned PPO parameters"
+    config_path: "configs/benchmark/cartpole_standard.yaml"
+    baseline_reward: 40.0
+    threshold:
+      metric: "avg_final_10"
+      min_ratio: 0.90
+
+  - name: "cartpole_disturbance_robust"
+    description: "CartPole with silent disturbance - tests robustness"
+    config_path: "configs/benchmark/cartpole_disturbance.yaml"
+    baseline_reward: 40.0
+    threshold:
+      metric: "avg_final_10"
+      min_ratio: 0.90
+
+  - name: "cartpole_bad_clip_epsilon"
+    description: "Intentionally bad clip_epsilon=0.99 with lr=0.1 - should regress"
+    config_path: "configs/benchmark/cartpole_bad_clip.yaml"
+    baseline_reward: 40.0
+    threshold:
+      metric: "avg_final_10"
+      min_ratio: 0.90
+
+settings:
+  seed: 42
+  repeat: 1
+  timeout_seconds: 600
+  chart_format: "png"
+  report_dir: "reports"

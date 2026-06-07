@@ -1,5 +1,5 @@
 """
-SQLAlchemy 数据模型：实验元数据表 + 调优Trial表。
+SQLAlchemy 数据模型：实验元数据表 + 调优Trial表 + 基准测试记录表。
 """
 
 import json
@@ -65,4 +65,50 @@ class Trial(Base):
         return (
             f"<Trial(id={self.id}, study='{self.study_name}', "
             f"number={self.trial_number}, value={self.objective_value})>"
+        )
+
+
+class BenchmarkRun(Base):
+    """基准测试运行记录：一次完整套件执行的汇总。"""
+
+    __tablename__ = "benchmark_runs"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    suite_name = Column(String(255), nullable=False)
+    run_at = Column(DateTime, nullable=False, default=lambda: datetime.now(timezone.utc))
+    overall_status = Column(String(50), nullable=False)
+    passed_count = Column(Integer, nullable=False)
+    failed_count = Column(Integer, nullable=False)
+
+    results = relationship(
+        "BenchmarkResultRecord", back_populates="run", cascade="all, delete-orphan"
+    )
+
+    def __repr__(self):
+        return (
+            f"<BenchmarkRun(id={self.id}, suite='{self.suite_name}', "
+            f"status='{self.overall_status}')>"
+        )
+
+
+class BenchmarkResultRecord(Base):
+    """单项基准测试结果记录。"""
+
+    __tablename__ = "benchmark_results"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    run_id = Column(Integer, ForeignKey("benchmark_runs.id"), nullable=False)
+    benchmark_name = Column(String(255), nullable=False)
+    baseline_reward = Column(Float, nullable=False)
+    actual_reward = Column(Float, nullable=False)
+    ratio = Column(Float, nullable=False)
+    threshold_ratio = Column(Float, nullable=False)
+    passed = Column(Integer, nullable=False)
+
+    run = relationship("BenchmarkRun", back_populates="results")
+
+    def __repr__(self):
+        return (
+            f"<BenchmarkResultRecord(id={self.id}, name='{self.benchmark_name}', "
+            f"reward={self.actual_reward})>"
         )

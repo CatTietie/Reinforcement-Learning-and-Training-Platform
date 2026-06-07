@@ -7,9 +7,9 @@ import json
 from datetime import datetime, timezone
 
 from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import joinedload, sessionmaker
 
-from db.models import Base, Experiment, Trial
+from db.models import Base, BenchmarkResultRecord, BenchmarkRun, Experiment, Trial
 
 
 class Database:
@@ -161,5 +161,62 @@ class Database:
             for t in trials:
                 session.expunge(t)
             return trials
+        finally:
+            session.close()
+
+    def create_benchmark_run(self, suite_name, overall_status, passed_count,
+                             failed_count, result_records):
+        """创建 BenchmarkRun 及其关联的结果记录，返回 run ID。
+
+        result_records: list of dict with keys:
+            benchmark_name, baseline_reward, actual_reward, ratio, threshold_ratio, passed
+        """
+        session = self.Session()
+        try:
+            run = BenchmarkRun(
+                suite_name=suite_name,
+                run_at=datetime.now(timezone.utc),
+                overall_status=overall_status,
+                passed_count=passed_count,
+                failed_count=failed_count,
+            )
+            session.add(run)
+            session.flush()
+
+            for rec in result_records:
+                record = BenchmarkResultRecord(
+                    run_id=run.id,
+                    benchmark_name=rec["benchmark_name"],
+                    baseline_reward=rec["baseline_reward"],
+                    actual_reward=rec["actual_reward"],
+                    ratio=rec["ratio"],
+                    threshold_ratio=rec["threshold_ratio"],
+                    passed=int(rec["passed"]),
+                )
+                session.add(record)
+
+            session.commit()
+            run_id = run.id
+            return run_id
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            session.close()
+
+    def list_benchmark_runs(self, suite_name, limit=3):
+        """查询指定 suite 最近 N 次 BenchmarkRun（含关联结果），按时间倒序。"""
+        session = self.Session()
+        try:
+            runs = (
+                session.query(BenchmarkRun)
+                .options(joinedload(BenchmarkRun.results))
+                .filter_by(suite_name=suite_name)
+                .order_by(BenchmarkRun.run_at.desc())
+                .limit(limit)
+                .all()
+            )
+            session.expunge_all()
+            return runs
         finally:
             session.close()
